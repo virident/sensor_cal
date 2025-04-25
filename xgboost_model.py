@@ -19,10 +19,10 @@ from sklearn.metrics import mean_squared_error as MSE
 
 
 
-def create_model(input_dim, hidden_dim, output_dim, dropout_rate, l1_lambda=0.1):
+def create_model():
     model = xgb.XGBRegressor(objective='reg:squarederror',
-                            n_estimators=1000,
-                            learning_rate=0.01,
+                            n_estimators=200,
+                            learning_rate=0.1,
                             max_depth=5,
                             min_child_weight=1,
                             gamma=0,
@@ -30,7 +30,8 @@ def create_model(input_dim, hidden_dim, output_dim, dropout_rate, l1_lambda=0.1)
                             colsample_bytree=0.8,
                             reg_alpha=0.005,
                             random_state=42,
-                            n_jobs=-1)
+                            tree_method = 'hist',
+                            device='cuda')
     return model
 
 def spatial_sincos_encoding(lat, lon, dim=16):
@@ -172,13 +173,33 @@ def train_temporal_model(X_train, y_train, X_val, y_val, epochs=100, lr=1e-3, co
     
     xgb_train = xgb.DMatrix(data = X_train, label = y_train, enable_categorical=True)
     xgb_val = xgb.DMatrix(data = X_val, label = y_val, enable_categorical=True)
-    
-    param = {"booster": "gblinear", "objective": "reg:linear"}
-    xgb_r = xgb.train(params = param, dtrain = xgb_train, evals = [(xgb_train, "X_train"), (xgb_val, "validation")], num_boost_round = 200, early_stopping_rounds = 50) 
+    best_loss = 100000
+    best_model = xgb.Booster()
+    best_lr = 0
+    best_md=0
+    best_samp = 0
+    best_colsamp = 0
+
+
+
+
+    param = {"booster": "gbtree", "objective": "reg:linear", "eta": 0.16, "max_depth": 5}
+    xgb_r = xgb.train(params = param, dtrain = xgb_train, evals = [(xgb_train, "X_train"), (xgb_val, "validation")], num_boost_round = 500, early_stopping_rounds = 20) 
     pred = xgb_r.predict(xgb_val, iteration_range = (0, xgb_r.best_iteration)) 
 
     final_loss = np.sqrt(MSE(y_val, pred)) 
-    print("RMSE : % f" %(final_loss)) 
+    print("val RMSE : % f" %(final_loss)) 
+
+    # if(final_loss < best_loss):
+    #     best_loss = final_loss
+    #     best_model = xgb_r
+    #     best_lr = rate
+    #     best_md = md
+
+    best_model = xgb_r
+   
+    best_lr = 0.16
+    best_md = 5
 
     # model = create_model(input_dim=X_scaled.shape[1], hidden_dim=(X_scaled.shape[1])// 2, output_dim=y_train.shape[1], dropout_rate=0.4, l1_lambda=0.1)
     # #for x in range(0, X_scaled.shape[0]):
@@ -205,7 +226,8 @@ def train_temporal_model(X_train, y_train, X_val, y_val, epochs=100, lr=1e-3, co
     #print("Train loss: ", train_loss)
     losses = final_loss
     
-    return xgb_r, losses
+    return best_model, losses, best_lr, best_md
+
 
 # def predict(self, lon, lat, mins, maxs):
 #     inp = np.array([lon, lat])
@@ -281,23 +303,27 @@ def parse_uniform_rows_from_csvs(folder_path, name1='D300', name2='Ref.CO2'):
     Internal_Humidity_all_cols_uniform_rows = []
     External_Humidity_all_cols_uniform_rows = []
 
-    max_entries = 100000000
-    for filename in csv_files:
-        num_files +=1
-        df = pd.read_csv(os.path.join(folder_path, filename))
-        df = df.ffill()
-        maxes = []
-        maxes.append(len((df.loc[:, [name1]].to_numpy())))
-        maxes.append(len((df.loc[:, [name2]].to_numpy())))
-        maxes.append(len((df.loc[:, ['longitude']].to_numpy())))
-        maxes.append(len((df.loc[:, ['latitude']].to_numpy())))
-        maxes.append(len((df.loc[:, ['SHT31TI']].to_numpy())))
-        maxes.append(len((df.loc[:, ['SHT31TE']].to_numpy())))
-        maxes.append(len((df.loc[:, ['SHT31HI']].to_numpy())))
-        maxes.append(len((df.loc[:, ['SHT31HE']].to_numpy())))
 
-        if max(maxes) < max_entries:
-            max_entries = max(maxes)
+    num_files = len(csv_files)
+
+    max_entries = 484968
+    
+    # for filename in csv_files:
+    #     num_files +=1
+    #     df = pd.read_csv(os.path.join(folder_path, filename))
+    #     df = df.ffill()
+    #     maxes = []
+    #     maxes.append(len((df.loc[:, [name1]].to_numpy())))
+    #     maxes.append(len((df.loc[:, [name2]].to_numpy())))
+    #     maxes.append(len((df.loc[:, ['longitude']].to_numpy())))
+    #     maxes.append(len((df.loc[:, ['latitude']].to_numpy())))
+    #     maxes.append(len((df.loc[:, ['SHT31TI']].to_numpy())))
+    #     maxes.append(len((df.loc[:, ['SHT31TE']].to_numpy())))
+    #     maxes.append(len((df.loc[:, ['SHT31HI']].to_numpy())))
+    #     maxes.append(len((df.loc[:, ['SHT31HE']].to_numpy())))
+
+    #     if max(maxes) < max_entries:
+    #         max_entries = max(maxes)
         
     print("max entries is ", max_entries)
         
@@ -362,10 +388,10 @@ def visualize_temporal_predictions(losses, title="Next D300 Prediction"):
     plt.show()
 
 
-def save_model(model, filename = 'trained_model.pth', save_dir='models'):
+def save_model(model, filename, save_dir='models'):
     os.makedirs(save_dir, exist_ok=True)
     save_path=os.path.join(save_dir, filename)
-    model.save_model('xgboost_models/xgmodel.json')
+    model.save_model('xgboost_models/xg_model_best_model.json')
     #model.export('models')
     
     print("saved model to {save_path}")
@@ -387,7 +413,7 @@ def split_train_val_test(X, y, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15,
 
 if __name__ == "__main__":
 
-    d300, ref_co2, long, lat, int_temp, ext_temp, int_humid, ext_humid, num_files, maxes, mins = parse_uniform_rows_from_csvs('large_data_folder/sensing_data')
+    d300, ref_co2, long, lat, int_temp, ext_temp, int_humid, ext_humid, num_files, maxes, mins = parse_uniform_rows_from_csvs('large_dataset')
 
     #model = SpatioTemporalRegressor(input_dim=18, hidden_dim=64, dropout_rate=0.3)
 
@@ -422,16 +448,19 @@ if __name__ == "__main__":
     print("mins shape is ", len(mins))
     print("maxes shape is ", len(maxes))
 
-    model, losses = train_temporal_model(X_train, y_train, X_val, y_val, epochs=50, lr=1e-10, col_maxs=maxes, col_mins=mins)
+    model, losses, learn_rate, mod_depth = train_temporal_model(X_train, y_train, X_val, y_val, epochs=50, lr=1e-10, col_maxs=maxes, col_mins=mins)
     
     
-    save_model(model, filename="xgmodel.json")
+    save_model(model, filename="xgmodel_long_epochs.json")
     
     
     model_loaded = xgb.Booster()
-    model_loaded.load_model('xgboost_models/xgmodel.json')
+    model_loaded.load_model('xgboost_models/xg_model_best_model.json')
     
-    
+    print("best loss is ", losses)
+    print("best learning rate is ", learn_rate)
+    print("best tree depth is ", mod_depth)
+
     
 
     # print("losses are ")
@@ -444,10 +473,22 @@ if __name__ == "__main__":
     results = model.predict(test_dmatrix, iteration_range = (0, model.best_iteration))
     test_loss = np.sqrt(MSE(y_test, results))
 
+    loaded_results = model_loaded.predict(test_dmatrix, iteration_range = (0, model_loaded.best_iteration))
+    loaded_test_loss = np.sqrt(MSE(y_test, results))
+
+    print("on test set: ")
     print("RMSE : % f" %(test_loss)) 
 
     print("sample at index 0")
     print("predicted value is ", results[0])
+    print("actual value is ", y_test[0])
+    
+        
+    print("on test set, loaded model loss is: ")
+    print("RMSE : % f" %(loaded_test_loss)) 
+
+    print("sample at index 0")
+    print("predicted value is ", loaded_results[0])
     print("actual value is ", y_test[0])
     
 
